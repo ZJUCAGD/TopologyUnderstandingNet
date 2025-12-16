@@ -1,0 +1,73 @@
+{
+  "experiment_name": "custom_data_training",
+  "seed": 42,
+  "output_dir": "./results",
+  
+  "model": {
+    "pd_input_dim": 2,
+    "pc_input_dim": 3,
+    "aux_dim": 14,  
+    "hidden_dim": 256,
+    "fusion_dim": 256,
+    "num_classes": 2,
+    "dropout": 0.3,
+    "attention_heads": 8
+  },
+  
+  "data": {
+    "data_dir": "./data/1D_custom",
+    "batch_size": 16,
+    "num_workers": 8,
+    "max_pd_points": 100,
+    "max_pc_points": 50000,
+    "normalize": false,
+    "synthetic_ratio": 0.0,
+    "augmentation": {
+      "enabled": true,
+      "noise_std": 0.0,
+      "rotation_range": 0.1,
+      "scaling_range": [0.9, 1.1]
+    }
+  },
+  
+  "training": {
+    "epochs": 200,
+    "num_epochs": 200,
+    "log_interval": 500,
+    "save_interval": 10,
+    "grad_clip": 1.0,
+    "early_stopping_patience": 10,
+    "early_stopping_min_delta": 0.001
+  },
+  
+  "optimizer": {
+    "type": "adamw",
+    "lr": 0.001,
+    "weight_decay": 0.01,
+    "momentum": 0.9
+  },
+  
+  "scheduler": {
+    "type": "cosine",
+    "step_size": 20,
+    "gamma": 0.1,
+    "factor": 0.5,
+    "patience": 5
+  },
+  
+  "loss": {
+    "type": "weighted_focal",
+    "class_weights": [1.0, 2.0],
+    "focal_alpha": 1.0,
+    "focal_gamma": 2.0,
+    "origin_constraint": false,
+    "origin_constraint_weight": 10.0
+  },
+  
+  "evaluation": {
+    "metrics": ["accuracy", "precision", "recall", "f1", "roc_auc"],
+    "save_predictions": true,
+    "visualize_results": true,
+    "num_visualization_samples": 10
+  }
+}

@@ -1,0 +1,553 @@
+"""
+Persistence Diagram Significance Detection Dataset Processing Module
+Dataset and Data Processing for Persistence Diagram Significance Detection
+
+Main Functions:
+1. PersistenceDataset - Main dataset class
+2. Data preprocessing and augmentation functions
+3. Data loading and batching utilities
+4. Synthetic data generator
+"""
+
+import torch
+import torch.nn.functional as F
+from torch.utils.data import Dataset, DataLoader
+import numpy as np
+import pickle
+import json
+import os
+from typing import Dict, List, Tuple, Optional, Union
+import warnings
+from sklearn.preprocessing import StandardScaler, MinMaxScaler
+
+
+
+class PersistenceDataset(Dataset):
+    """
+    Persistence Diagram Significance Detection Dataset
+    
+    Data Format:
+    - persistence_diagrams: Persistence diagram points [(birth, death), ...]
+    - point_clouds: Original point cloud data [(x, y, z), ...]  
+    - significance_labels: Significance labels [0, 1, 1, 0, ...]
+    - auxiliary_features: Auxiliary features (optional)
+    - metadata: Metadata information
+    """
+    
+    def __init__(self, 
+                 data_dir: str,
+                 split: str = 'train',
+                 max_pd_points: int = 100,
+                 max_pc_points: int = 2000,
+                 normalize: bool = True,
+                 augment: bool = False,
+                 synthetic_ratio: float = 0.0):
+        """
+        Args:
+            data_dir: Data directory path
+            split: Dataset split ('train', 'val', 'test')
+            max_pd_points: Maximum number of persistence diagram points
+            max_pc_points: Maximum number of point cloud points
+            normalize: Whether to normalize data
+            augment: Whether to perform data augmentation
+            synthetic_ratio: Synthetic data ratio (0.0-1.0)
+        """
+        self.data_dir = data_dir
+        self.split = split
+        self.max_pd_points = max_pd_points
+        self.max_pc_points = max_pc_points
+        self.normalize = normalize
+        self.augment = augment and (split == 'train')
+        self.synthetic_ratio = synthetic_ratio
+        
+        # Load data
+        self.data_list = self._load_data()
+        
+        # Data statistics
+        self.num_samples = len(self.data_list)
+        #print(f"Loaded {split} dataset: {self.num_samples} samples")
+        
+        # Initialize normalizers
+        if self.normalize:
+            self._init_normalizers()
+    
+    def _load_data(self) -> List[Dict]:
+        """Load data files"""
+        data_list = []
+        
+        # 加载真实数据 - 支持两种格式
+        # Format 1: Single pkl file (old format)
+        real_data_path = os.path.join(self.data_dir, 'processed', f'{self.split}.pkl')
+        if os.path.exists(real_data_path):
+            with open(real_data_path, 'rb') as f:
+                real_data = pickle.load(f)
+                # Add sample names to old format data
+                for i, sample in enumerate(real_data):
+                    sample['sample_name'] = f'{self.split}_sample_{i:06d}'
+                data_list.extend(real_data)
+                #print(f"Loaded real data: {len(real_data)} samples")
+        else:
+            # Format 2: Distributed pkl files (custom data format)
+            real_data_dir = os.path.join(self.data_dir, 'processed', self.split)
+            if os.path.exists(real_data_dir):
+                sample_files = [f for f in os.listdir(real_data_dir) if f.endswith('.pkl')]
+                sample_files.sort()  # Ensure consistent order
+                
+                for sample_file in sample_files:
+                    sample_path = os.path.join(real_data_dir, sample_file)
+                    with open(sample_path, 'rb') as f:
+                        sample_data = pickle.load(f)
+                        # Add sample name (remove .pkl extension)
+                        sample_data['sample_name'] = sample_file[:-4]  # Remove .pkl
+                        data_list.append(sample_data)
+                
+                #print(f"Loaded real data from distributed files: {len(data_list)} samples")
+        
+        # Load synthetic data - support two formats
+        if self.synthetic_ratio > 0:
+            synthetic_data = []
+            
+            # Format 1: Single pkl file
+            synthetic_data_path = os.path.join(self.data_dir, f'{self.split}_synthetic.pkl')
+            if os.path.exists(synthetic_data_path):
+                with open(synthetic_data_path, 'rb') as f:
+                    synthetic_data = pickle.load(f)
+                    # Add sample names to synthetic data
+                    for i, sample in enumerate(synthetic_data):
+                        sample['sample_name'] = f'{self.split}_synthetic_{i:06d}'
+                    #print(f"Loaded synthetic data from single file: {len(synthetic_data)} samples")
+            else:
+                # Format 2: Distributed pkl files (generated by generate_synthetic_data.py)
+                synthetic_dir = os.path.join(self.data_dir, 'processed', self.split)
+                if os.path.exists(synthetic_dir):
+                    sample_files = [f for f in os.listdir(synthetic_dir) if f.endswith('.pkl')]
+                    sample_files.sort()  # Ensure consistent order
+                    
+                    for sample_file in sample_files:
+                        sample_path = os.path.join(synthetic_dir, sample_file)
+                        with open(sample_path, 'rb') as f:
+                            sample_data = pickle.load(f)
+                            # Add sample name (remove .pkl extension)
+                            sample_data['sample_name'] = sample_file[:-4]  # Remove .pkl
+                            synthetic_data.append(sample_data)
+                    
+                    #print(f"Loaded synthetic data from distributed files: {len(synthetic_data)} samples")
+            
+            # Process synthetic data sampling
+            if len(synthetic_data) > 0:
+                if self.synthetic_ratio >= 1.0:
+                    # Use all synthetic data
+                    data_list.extend(synthetic_data)
+                    #print(f"Used all synthetic data: {len(synthetic_data)} samples")
+                else:
+                    # Sample synthetic data proportionally
+                    if len(data_list) > 0:
+                        # When there are real data, calculate the number of synthetic data proportionally
+                        num_synthetic = int(len(data_list) * self.synthetic_ratio / (1 - self.synthetic_ratio))
+                    else:
+                        # When there are no real data, use all synthetic data
+                        num_synthetic = len(synthetic_data)
+                    
+                    if num_synthetic > 0:
+                        num_synthetic = min(num_synthetic, len(synthetic_data))
+                        synthetic_indices = np.random.choice(len(synthetic_data), 
+                                                           num_synthetic, 
+                                                           replace=False)
+                        selected_synthetic = [synthetic_data[i] for i in synthetic_indices]
+                        data_list.extend(selected_synthetic)
+                        #print(f"Sampled synthetic data: {len(selected_synthetic)} samples")
+        
+        #print(f"Loaded {self.split} dataset: {len(data_list)} samples")
+        return data_list
+    
+    def _init_normalizers(self):
+        """Initialize data normalizers"""
+        if self.split == 'train':
+            # Collect statistics from all training data
+            all_pd_points = []
+            all_pc_points = []
+            all_aux_features = []
+            
+            for data in self.data_list:
+                if 'persistence_diagram' in data:
+                    all_pd_points.extend(data['persistence_diagram'])
+                if 'point_cloud' in data:
+                    all_pc_points.extend(data['point_cloud'])
+                if 'auxiliary_features' in data:
+                    all_aux_features.append(data['auxiliary_features'])
+            
+            # Persistence diagram normalizer
+            if all_pd_points:
+                self.pd_scaler = StandardScaler()
+                self.pd_scaler.fit(np.array(all_pd_points))
+            
+            # Point cloud normalizer
+            if all_pc_points:
+                self.pc_scaler = StandardScaler()
+                self.pc_scaler.fit(np.array(all_pc_points))
+            
+            # Auxiliary features normalizer
+            if all_aux_features:
+                self.aux_scaler = StandardScaler()
+                self.aux_scaler.fit(np.array(all_aux_features))
+            
+            # Save normalizers
+            scaler_path = os.path.join(self.data_dir, 'processed', 'scalers.pkl')
+            scalers = {
+                'pd_scaler': getattr(self, 'pd_scaler', None),
+                'pc_scaler': getattr(self, 'pc_scaler', None),
+                'aux_scaler': getattr(self, 'aux_scaler', None)
+            }
+            with open(scaler_path, 'wb') as f:
+                pickle.dump(scalers, f)
+        else:
+            # Load normalizers from training
+            scaler_path = os.path.join(self.data_dir, 'processed', 'scalers.pkl')
+            if os.path.exists(scaler_path):
+                with open(scaler_path, 'rb') as f:
+                    scalers = pickle.load(f)
+                    self.pd_scaler = scalers.get('pd_scaler')
+                    self.pc_scaler = scalers.get('pc_scaler')
+                    self.aux_scaler = scalers.get('aux_scaler')
+    
+    def __len__(self):
+        return self.num_samples
+    
+    def __getitem__(self, idx):
+        """Get a single data sample"""
+        data = self.data_list[idx]
+        
+        # Extract basic data - compatible with two key name formats
+        if 'persistence_diagram' in data:
+            pd_points = np.array(data['persistence_diagram'])  # [N, 2]
+        else:
+            pd_points = np.array(data['pd_points'])  # [N, 2]
+            
+        point_cloud = np.array(data['point_cloud'])        # [M, 3]
+        
+        # Compatible with two label key name formats
+        if 'significance_labels' in data:
+            significance_labels = np.array(data['significance_labels'])  # [N]
+        elif 'labels' in data:
+            significance_labels = np.array(data['labels'])  # [N]
+        else:
+            raise KeyError("Neither 'significance_labels' nor 'labels' found in data")
+        
+        # Handle infinite and NaN values in persistence diagram
+        pd_points = np.nan_to_num(pd_points, nan=0.0, posinf=10.0, neginf=0.0)
+        # Ensure death >= birth
+        pd_points[:, 1] = np.maximum(pd_points[:, 1], pd_points[:, 0] + 1e-6)
+        
+        # Optimized origin constraint: only mark true (0,0) points
+        # Use stricter conditions to ensure only true origins are marked as insignificant
+        tolerance = 1e-10  # Use smaller tolerance, only for true (0,0) points
+        origin_mask = (pd_points[:, 0] == 0.0) & (pd_points[:, 1] == 0.0)
+        
+        # If there are no exact (0,0) points, use very small tolerance check
+        if not origin_mask.any():
+            origin_mask = (np.abs(pd_points[:, 0]) < tolerance) & (np.abs(pd_points[:, 1]) < tolerance)
+        
+        # Only mark detected true origins
+        if origin_mask.any():
+            significance_labels[origin_mask] = 0  # Force to insignificant points
+            print(f"Detected {origin_mask.sum()} origin points and marked as insignificant")
+        
+        # Auxiliary features (optional)
+        aux_features = None
+        if 'auxiliary_features' in data:
+            aux_features = np.array(data['auxiliary_features'])
+        elif 'aux_features' in data:
+            aux_features = np.array(data['aux_features'])
+        
+        # Handle infinite and NaN values in auxiliary features
+        if aux_features is not None:
+            aux_features = np.nan_to_num(aux_features, nan=0.0, posinf=10.0, neginf=0.0)
+        # Data augmentation
+        if self.augment:
+            pd_points, point_cloud, significance_labels = self._augment_data(
+                pd_points, point_cloud, significance_labels
+            )
+        
+        # Data normalization
+        if self.normalize:
+            if hasattr(self, 'pd_scaler') and self.pd_scaler is not None:
+                pd_points = self.pd_scaler.transform(pd_points)
+            if hasattr(self, 'pc_scaler') and self.pc_scaler is not None:
+                point_cloud = self.pc_scaler.transform(point_cloud)
+            if aux_features is not None and hasattr(self, 'aux_scaler') and self.aux_scaler is not None:
+                aux_features = self.aux_scaler.transform(aux_features.reshape(1, -1)).flatten()
+        
+        # Pad or truncate to fixed length
+        pd_points, significance_labels = self._pad_or_truncate_pd(pd_points, significance_labels)
+        point_cloud = self._pad_or_truncate_pc(point_cloud)
+        
+        # Convert to tensors
+        sample = {
+            'pd_points': torch.FloatTensor(pd_points),
+            'point_cloud': torch.FloatTensor(point_cloud),
+            'significance_labels': torch.LongTensor(significance_labels),
+            'num_pd_points': torch.LongTensor([min(len(pd_points), self.max_pd_points)]),
+            'num_pc_points': torch.LongTensor([min(len(data['point_cloud']), self.max_pc_points)]),
+            'sample_name': data.get('sample_name', f'sample_{idx:06d}')  # Add sample name
+        }
+        
+        if aux_features is not None:
+            sample['aux_features'] = torch.FloatTensor(aux_features)
+        
+        # Add metadata
+        if 'metadata' in data:
+            sample['metadata'] = data['metadata']
+        
+        return sample
+    
+    def _augment_data(self, pd_points, point_cloud, significance_labels):
+        """Data augmentation"""
+        # If it's a 2D point cloud, pad to 3D
+        if point_cloud.shape[1] == 2:
+            zeros_column = np.zeros((point_cloud.shape[0], 1))
+            point_cloud = np.hstack([point_cloud, zeros_column])
+        
+        # Geometric transformations
+        if np.random.random() < 0.5:
+            # Random rotation of point cloud
+            angle = np.random.uniform(0, 2 * np.pi)
+            cos_a, sin_a = np.cos(angle), np.sin(angle)
+            rotation_matrix = np.array([[cos_a, -sin_a, 0],
+                                      [sin_a, cos_a, 0],
+                                      [0, 0, 1]])
+            point_cloud = point_cloud @ rotation_matrix.T
+        
+        if np.random.random() < 0.3:
+            # Random scaling
+            scale = np.random.uniform(0.8, 1.2)
+            point_cloud *= scale
+            pd_points *= scale
+        
+        if np.random.random() < 0.3:
+            # Add noise
+            noise_std = 0.01
+            point_cloud += np.random.normal(0, noise_std, point_cloud.shape)
+            pd_points += np.random.normal(0, noise_std * 0.1, pd_points.shape)
+        
+        return pd_points, point_cloud, significance_labels
+    
+    def _pad_or_truncate_pd(self, pd_points, significance_labels):
+        """Pad or truncate persistence diagram data"""
+        num_points = len(pd_points)
+        
+        if num_points > self.max_pd_points:
+            # Truncate: keep points with largest persistence
+            persistence = pd_points[:, 1] - pd_points[:, 0]
+            top_indices = np.argsort(persistence)[-self.max_pd_points:]
+            pd_points = pd_points[top_indices]
+            significance_labels = significance_labels[top_indices]
+        elif num_points < self.max_pd_points:
+            # Pad: pad with zeros
+            pad_size = self.max_pd_points - num_points
+            pd_points = np.pad(pd_points, ((0, pad_size), (0, 0)), mode='constant')
+            significance_labels = np.pad(significance_labels, (0, pad_size), mode='constant')
+        
+        return pd_points, significance_labels
+    
+    def _pad_or_truncate_pc(self, point_cloud):
+        """Pad or truncate point cloud data"""
+        num_points = len(point_cloud)
+        
+        if num_points > self.max_pc_points:
+            # Random sampling
+            indices = np.random.choice(num_points, self.max_pc_points, replace=False)
+            point_cloud = point_cloud[indices]
+        elif num_points < self.max_pc_points:
+            # Repeat sampling padding
+            if num_points > 0:
+                repeat_indices = np.random.choice(num_points, self.max_pc_points - num_points, replace=True)
+                repeated_points = point_cloud[repeat_indices]
+                point_cloud = np.vstack([point_cloud, repeated_points])
+            else:
+                # If no points, pad with zeros
+                point_cloud = np.zeros((self.max_pc_points, 3))
+        
+        return point_cloud
+
+
+def collate_fn(batch):
+    """Custom batch processing function"""
+    batch_dict = {}
+    
+    # Process basic tensor fields: pd_points, point_cloud, significance_labels
+    # These tensors may have different first dimensions (number of points), need to unify
+    
+    # 1. Process pd_points [batch_size, num_points, 2]
+    if 'pd_points' in batch[0]:
+        # Find the maximum number of points in pd_points across the batch
+        max_pd_points = max(item['pd_points'].shape[0] for item in batch)
+        
+        # Unify dimensions, pad to maximum number of points
+        unified_pd_points = []
+        for item in batch:
+            pd_points = item['pd_points']
+            current_points = pd_points.shape[0]
+            
+            if current_points < max_pd_points:
+                # Pad to maximum number of points
+                pad_size = max_pd_points - current_points
+                padding = torch.zeros(pad_size, pd_points.shape[1])
+                unified_pd = torch.cat([pd_points, padding], dim=0)
+            else:
+                unified_pd = pd_points
+            unified_pd_points.append(unified_pd)
+        
+        batch_dict['pd_points'] = torch.stack(unified_pd_points)
+    
+    # 2. Process point_cloud [batch_size, num_points, 3]
+    if 'point_cloud' in batch[0]:
+        # Find the maximum number of points in point_cloud across the batch
+        max_pc_points = max(item['point_cloud'].shape[0] for item in batch)
+        
+        # Unify dimensions, pad to maximum number of points
+        unified_point_clouds = []
+        for item in batch:
+            point_cloud = item['point_cloud']
+            current_points = point_cloud.shape[0]
+            
+            if current_points < max_pc_points:
+                # Pad to maximum number of points
+                pad_size = max_pc_points - current_points
+                padding = torch.zeros(pad_size, point_cloud.shape[1])
+                unified_pc = torch.cat([point_cloud, padding], dim=0)
+            else:
+                unified_pc = point_cloud
+            unified_point_clouds.append(unified_pc)
+        
+        batch_dict['point_cloud'] = torch.stack(unified_point_clouds)
+    
+    # 3. Process significance_labels [batch_size, num_points]
+    if 'significance_labels' in batch[0]:
+        # Find the maximum number of points in significance_labels across the batch
+        max_labels_points = max(item['significance_labels'].shape[0] for item in batch)
+        
+        # Unify dimensions, pad to maximum number of points
+        unified_labels = []
+        for item in batch:
+            labels = item['significance_labels']
+            current_points = labels.shape[0]
+            
+            if current_points < max_labels_points:
+                # Pad to maximum number of points
+                pad_size = max_labels_points - current_points
+                padding = torch.zeros(pad_size, dtype=labels.dtype)
+                unified_label = torch.cat([labels, padding], dim=0)
+            else:
+                unified_label = labels
+            unified_labels.append(unified_label)
+        
+        batch_dict['significance_labels'] = torch.stack(unified_labels)
+    
+    # 4. Process num_pd_points and num_pc_points [batch_size, 1]
+    if 'num_pd_points' in batch[0]:
+        batch_dict['num_pd_points'] = torch.stack([item['num_pd_points'] for item in batch])
+    
+    if 'num_pc_points' in batch[0]:
+        batch_dict['num_pc_points'] = torch.stack([item['num_pc_points'] for item in batch])
+    
+    # 5. Process auxiliary features (optional)
+    if any('aux_features' in item for item in batch):
+        # Find the maximum dimension of aux_features across the batch
+        max_dim = 0
+        aux_features_list = []
+        
+        # First pass: collect all aux_features and find maximum dimension
+        for item in batch:
+            if 'aux_features' in item:
+                aux_dim = item['aux_features'].shape[0]
+                max_dim = max(max_dim, aux_dim)
+                aux_features_list.append(item['aux_features'])
+            else:
+                aux_features_list.append(None)
+        
+        # Second pass: unify dimensions, pad to maximum dimension
+        unified_aux_features = []
+        for i, aux_features in enumerate(aux_features_list):
+            if aux_features is not None:
+                current_dim = aux_features.shape[0]
+                if current_dim < max_dim:
+                    # Pad to maximum dimension
+                    padding = torch.zeros(max_dim - current_dim)
+                    unified_aux = torch.cat([aux_features, padding])
+                else:
+                    unified_aux = aux_features
+            else:
+                # If no aux_features, create zero tensor
+                unified_aux = torch.zeros(max_dim) if max_dim > 0 else torch.zeros(8)
+            unified_aux_features.append(unified_aux)
+        
+        # Stack processed aux_features
+        batch_dict['aux_features'] = torch.stack(unified_aux_features)
+    
+    # 6. Process metadata (safe way)
+    if 'metadata' in batch[0]:
+        # Check if all items have metadata to avoid KeyError
+        batch_dict['metadata'] = [item.get('metadata', None) for item in batch]
+    
+    # 7. Process sample names
+    if 'sample_name' in batch[0]:
+        batch_dict['sample_names'] = [item['sample_name'] for item in batch]
+    
+    return batch_dict
+
+
+def create_data_loaders(data_dir: str, 
+                       batch_size: int = 32,
+                       num_workers: int = 4,
+                       **dataset_kwargs) -> Tuple[DataLoader, DataLoader, DataLoader]:
+    """
+    Create training, validation, and test data loaders
+    
+    Args:
+        data_dir: Data directory
+        batch_size: Batch size
+        num_workers: Number of workers
+        **dataset_kwargs: Additional dataset parameters
+    
+    Returns:
+        train_loader, val_loader, test_loader
+    """
+    train_dataset = PersistenceDataset(data_dir, split='train', augment=True, **dataset_kwargs)
+    val_dataset = PersistenceDataset(data_dir, split='val', augment=False, **dataset_kwargs)
+    test_dataset = PersistenceDataset(data_dir, split='test', augment=False, **dataset_kwargs)
+    
+    dataloader_kwargs = {
+        'pin_memory': torch.cuda.is_available(),
+        'persistent_workers': num_workers > 0,
+        'prefetch_factor': 2 if num_workers > 0 else None,
+        'drop_last': False
+    }
+    
+    train_loader = DataLoader(
+        train_dataset, 
+        batch_size=batch_size, 
+        shuffle=True, 
+        num_workers=num_workers,
+        collate_fn=collate_fn,
+        **dataloader_kwargs
+    )
+    
+    val_loader = DataLoader(
+        val_dataset, 
+        batch_size=batch_size, 
+        shuffle=False, 
+        num_workers=num_workers,
+        collate_fn=collate_fn,
+        **dataloader_kwargs
+    )
+    
+    test_loader = DataLoader(
+        test_dataset, 
+        batch_size=batch_size, 
+        shuffle=False, 
+        num_workers=num_workers,
+        collate_fn=collate_fn,
+        **dataloader_kwargs
+    )
+    
+    return train_loader, val_loader, test_loader
