@@ -43,7 +43,7 @@ ipykernel>=6.0.0
 
 ### 2. Prepare Data
 #### Training and test data download (Google Drive): [data.zip](https://drive.google.com/file/d/1_I9JjBFIBkmxwPYljdZAPyrHhLe9eFah/view?usp=sharing).  
-After downloading, extract the archive and place the `data` folder in the project root directory.
+After downloading, extract the archive and place the `data` folder in the project root directory. Each data sample consists of three files: the raw point cloud, the top-100 persistence points in 1-PD, and their corresponding significance labels.
 
 ### 3. Train and Test
 A trained best TUN model is provided at `results\checkpoints\best_model_1D.pth`.  
