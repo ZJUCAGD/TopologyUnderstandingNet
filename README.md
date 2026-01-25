@@ -46,8 +46,7 @@ ipykernel>=6.0.0
 After downloading, extract the archive and place the `data` folder in the project root directory. Each data sample consists of three files: the raw point cloud, the top-100 persistence points in 1-PD, and their corresponding significance labels.
 
 ### 3. Train and Test
-A trained best TUN model is provided at `results\checkpoints\best_model_1D.pth`.  
+A trained best TUN model is provided at `results\checkpoints\best_model.pth`.  
 To evaluate it on the four test sets, run the Jupyter notebook `test_exist_model.ipynb`.
 
-To train your own model and evaluate it, run the Jupyter notebook `train_and_test.ipynb` and follow the prompts.  
-Notice that the trained model will save to and rewrite r`results\checkpoints\best_model_1D.pth`.
+To train your own model and evaluate it, run the Jupyter notebook `train_and_test.ipynb` and follow the prompts. Your new model will be saved at `results\checkpoints\best_model_1D.pth`. 
